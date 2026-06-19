@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Time Tracker</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#08080C">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #08080C; min-height: 100vh; }
+  body { display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  #root { width: 100%; max-width: 640px; }
+  :root {
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const DEFAULT_CATS = [
+  { name: "RocketReels", color: "#00FFC2" },
+  { name: "Учёба", color: "#B57BFF" },
+  { name: "Фриланс", color: "#FFB627" },
+  { name: "Личное", color: "#00C2FF" },
+];
+const PALETTE = ["#00FFC2","#B57BFF","#FFB627","#00C2FF","#FF4FA0","#FF5C5C","#7CFF5C","#FFE74C","#5C8AFF","#FF8A3C"];
+
+function fmtDur(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+}
+function fmtHours(ms) { return (ms / 3600000).toFixed(1) + " ч"; }
+function fmtTime(ts) { return new Date(ts).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"}); }
+function fmtDate(ts) { return new Date(ts).toLocaleDateString("ru-RU",{day:"numeric",month:"short"}); }
+function today() { return new Date().toDateString(); }
+
+const SESS_KEY = "ttr_sessions_v2";
+const CATS_KEY = "ttr_categories_v2";
+const RECORD_KEY = "ttr_rocket_record_v1";
+function load(k, def) { try { const v = JSON.parse(localStorage.getItem(k)); return v === null || v === undefined ? def : v; } catch (e) { return def; } }
+function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+function hexToRgb(hex) {
+  const m = hex.replace("#","").match(/.{2}/g);
+  return m.map(x => parseInt(x, 16)).join(",");
+}
+
+function altitudeForMs(ms) {
+  const minutes = ms / 60000;
+  const maxPct = 96;
+  const k = 55;
+  return Math.min(maxPct, (minutes / (minutes + k)) * maxPct * 1.45);
+}
+
+function altBackground(pct) {
+  if (pct < 18) return ["#0a0c12", "#11141d"];
+  if (pct < 38) return ["#0c1224", "#161d3a"];
+  if (pct < 58) return ["#0d1638", "#1b2a5e"];
+  if (pct < 78) return ["#0e1240", "#241a55"];
+  return ["#07071a", "#1a0f33"];
+}
+
+function NeonButton({ active, color, onClick, disabled, children, style }) {
+  const rgb = hexToRgb(color);
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      padding: "7px 16px", borderRadius: 10, cursor: disabled ? "not-allowed" : "pointer",
+      fontSize: 13, fontWeight: active ? 600 : 400, fontFamily: "var(--font-sans)",
+      background: active ? `rgba(${rgb},0.12)` : "rgba(255,255,255,0.03)",
+      border: active ? `1px solid rgba(${rgb},0.9)` : "1px solid rgba(255,255,255,0.08)",
+      color: active ? color : "rgba(255,255,255,0.55)",
+      boxShadow: active ? `0 0 8px rgba(${rgb},0.7), 0 0 22px rgba(${rgb},0.45), inset 0 0 10px rgba(${rgb},0.15)` : "none",
+      opacity: disabled && !active ? 0.35 : 1,
+      transition: "all 0.25s ease",
+      textShadow: active ? `0 0 8px rgba(${rgb},0.8)` : "none",
+      ...style,
+    }}>
+      {children}
+    </button>
+  );
+}
+
+function RocketTrack({ pct, color, running, paused, isRecord }) {
+  const rgb = hexToRgb(color);
+  const trackH = 280;
+  const rocketY = trackH - (pct / 100) * (trackH - 30) - 20;
+  const [bgTop, bgBot] = altBackground(pct);
+  const horizonOpacity = Math.max(0, 1 - pct / 22);
+  return (
+    <div style={{
+      position: "relative", width: 64, height: trackH, flexShrink: 0,
+      borderRadius: 12, overflow: "hidden",
+      background: `linear-gradient(180deg, ${bgBot} 0%, ${bgTop} 100%)`,
+      border: "1px solid rgba(255,255,255,0.08)",
+      transition: "background 1.2s ease",
+    }}>
+      <div style={{
+        position: "absolute", left: 0, right: 0, bottom: 0, height: 40,
+        background: "linear-gradient(180deg, transparent, rgba(255,140,60,0.25))",
+        opacity: horizonOpacity, transition: "opacity 1s ease",
+      }} />
+      {[12,28,44,60,78,95,115,135,150,168,185,200,218,235,250,265].map((y,i) => (
+        <div key={i} style={{
+          position: "absolute", left: `${(i * 37) % 50 + 10}%`, top: y, width: i % 4 === 0 ? 2.5 : 1.5, height: i % 4 === 0 ? 2.5 : 1.5,
+          borderRadius: "50%", background: "#fff",
+          opacity: Math.min(0.9, 0.15 + (pct / 100) * 0.85) * (y < trackH - rocketY + 30 ? 1 : 0.4),
+          boxShadow: pct > 60 && i % 5 === 0 ? "0 0 3px rgba(255,255,255,0.6)" : "none",
+          transition: "opacity 1s ease",
+        }} />
+      ))}
+      <div style={{
+        position: "absolute", left: "50%", bottom: 0, width: 3, transform: "translateX(-50%)",
+        height: `${pct}%`, background: `linear-gradient(180deg, ${color}, transparent)`,
+        boxShadow: `0 0 8px rgba(${rgb},0.8)`, transition: "height 0.6s ease",
+      }} />
+      {isRecord !== null && (
+        <div style={{
+          position: "absolute", left: 0, right: 0, bottom: `${isRecord}%`,
+          borderTop: "1px dashed rgba(255,255,255,0.3)", height: 0,
+        }}>
+          <span style={{ position: "absolute", right: 2, top: -14, fontSize: 8, color: "rgba(255,255,255,0.4)" }}>★</span>
+        </div>
+      )}
+      <div style={{
+        position: "absolute", left: "50%", top: rocketY, transform: "translateX(-50%)",
+        transition: "top 0.6s ease", fontSize: 26, lineHeight: 1,
+        filter: running && !paused ? `drop-shadow(0 0 10px rgba(${rgb},0.9)) drop-shadow(0 0 22px rgba(${rgb},0.6))` : `drop-shadow(0 0 4px rgba(${rgb},0.4))`,
+      }}>
+        <div style={{
+          transform: "rotate(0deg)",
+          animation: running && !paused ? "rocketWobble 0.6s ease-in-out infinite" : "none",
+        }}>🚀</div>
+        {running && !paused && (
+          <div style={{
+            position: "absolute", left: "50%", top: "100%", transform: "translateX(-50%)",
+            width: 8, height: 16, background: `linear-gradient(180deg, ${color}, transparent)`,
+            borderRadius: "0 0 4px 4px", animation: "flicker 0.15s ease-in-out infinite alternate",
+            opacity: 0.85,
+          }} />
+        )}
+      </div>
+      <style>{`
+        @keyframes rocketWobble { 0%,100% { transform: rotate(-4deg) translateY(0); } 50% { transform: rotate(4deg) translateY(-2px); } }
+        @keyframes flicker { 0% { opacity: 0.5; height: 12px; } 100% { opacity: 0.9; height: 20px; } }
+      `}</style>
+    </div>
+  );
+}
+
+function App() {
+  const [sessions, setSessions] = useState(() => load(SESS_KEY, []));
+  const [cats, setCats] = useState(() => load(CATS_KEY, DEFAULT_CATS));
+  const [record, setRecord] = useState(() => load(RECORD_KEY, { ms: 0, category: null, date: null }));
+  const [running, setRunning] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [catIdx, setCatIdx] = useState(0);
+  const [note, setNote] = useState("");
+  const [startTs, setStartTs] = useState(null);
+  const [view, setView] = useState("timer");
+  const [editCats, setEditCats] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+  const [newCatColor, setNewCatColor] = useState(PALETTE[4]);
+  const [editSession, setEditSession] = useState(null);
+  const [statsRange, setStatsRange] = useState("today");
+  const [justBeatRecord, setJustBeatRecord] = useState(false);
+  const intervalRef = useRef(null);
+  const pausedEl = useRef(0);
+
+  useEffect(() => { save(SESS_KEY, sessions); }, [sessions]);
+  useEffect(() => { save(CATS_KEY, cats); }, [cats]);
+  useEffect(() => { save(RECORD_KEY, record); }, [record]);
+
+  useEffect(() => {
+    if (running && !paused) {
+      intervalRef.current = setInterval(() => {
+        setElapsed(prev => {
+          const next = pausedEl.current + Date.now() - startTs;
+          if (next > record.ms) {
+            if (!justBeatRecord) setJustBeatRecord(true);
+          }
+          return next;
+        });
+      }, 500);
+    } else clearInterval(intervalRef.current);
+    return () => clearInterval(intervalRef.current);
+  }, [running, paused, startTs, record.ms, justBeatRecord]);
+
+  const activeCat = cats[catIdx] || cats[0] || { name: "—", color: "#888" };
+  const activeRgb = hexToRgb(activeCat.color);
+
+  function handleStart() {
+    const now = Date.now(); setStartTs(now); pausedEl.current = 0; setElapsed(0); setRunning(true); setPaused(false); setJustBeatRecord(false);
+  }
+  function handlePause() {
+    if (paused) { setStartTs(Date.now()); setPaused(false); }
+    else { pausedEl.current = elapsed; setPaused(true); }
+  }
+  function handleStop() {
+    if (elapsed < 1000) { setRunning(false); setElapsed(0); setJustBeatRecord(false); return; }
+    setSessions(p => [{ id: Date.now(), category: activeCat.name, color: activeCat.color, note, start: startTs, end: Date.now(), duration: elapsed, date: today() }, ...p]);
+    if (elapsed > record.ms) {
+      setRecord({ ms: elapsed, category: activeCat.name, date: Date.now() });
+    }
+    setRunning(false); setPaused(false); setElapsed(0); setNote(""); pausedEl.current = 0; setJustBeatRecord(false);
+  }
+
+  function addCat() {
+    const n = newCatName.trim();
+    if (!n || cats.find(c => c.name === n)) return;
+    setCats(p => [...p, { name: n, color: newCatColor }]);
+    setNewCatName(""); setNewCatColor(PALETTE[(cats.length) % PALETTE.length]);
+  }
+  function removeCat(i) {
+    if (cats.length <= 1) return;
+    setCats(p => p.filter((_, j) => j !== i));
+    if (catIdx >= i) setCatIdx(Math.max(0, catIdx - 1));
+  }
+  function updateCatColor(i, color) { setCats(p => p.map((c, j) => j === i ? { ...c, color } : c)); }
+  function updateCatName(i, name) { setCats(p => p.map((c, j) => j === i ? { ...c, name } : c)); }
+
+  const now = Date.now();
+  const filterMs = statsRange === "today" ? 0 : statsRange === "week" ? now - 7*864e5 : now - 30*864e5;
+  const filteredSess = sessions.filter(s => statsRange === "today" ? s.date === today() : s.start >= filterMs);
+
+  const catTotals = cats.map(c => ({
+    ...c,
+    ms: filteredSess.filter(s => s.category === c.name).reduce((a, s) => a + s.duration, 0),
+  })).filter(c => c.ms > 0);
+
+  const totalMs = catTotals.reduce((a, c) => a + c.ms, 0);
+
+  const R = 70, CX = 100, CY = 90, strokeW = 20;
+  const circ = 2 * Math.PI * R;
+  let offset = 0;
+  const arcs = catTotals.map(c => {
+    const pct = c.ms / totalMs;
+    const dash = pct * circ;
+    const o = offset;
+    offset += dash;
+    return { ...c, dash, offset: o, pct };
+  });
+
+  const todayTotal = sessions.filter(s => s.date === today()).reduce((a, s) => a + s.duration, 0);
+  const weekTotal = sessions.filter(s => s.start >= now - 7*864e5).reduce((a, s) => a + s.duration, 0);
+
+  const currentPct = altitudeForMs(elapsed);
+  const recordPct = record.ms > 0 ? altitudeForMs(record.ms) : null;
+
+  const inputStyle = {
+    width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.03)",
+    color: "#fff", fontSize: 14, outline: "none",
+  };
+
+  return (
+    <div style={{
+      fontFamily: "var(--font-sans)", maxWidth: 640, margin: "0 auto", padding: "1.5rem 1rem",
+      background: "#08080C", borderRadius: 20, color: "#fff",
+      boxShadow: "0 0 0 1px rgba(255,255,255,0.06), 0 20px 60px rgba(0,0,0,0.6)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem" }}>
+        <div>
+          <h2 style={{
+            fontSize: 19, fontWeight: 600, margin: 0, letterSpacing: 0.5,
+            background: `linear-gradient(90deg, ${activeCat.color}, #fff)`,
+            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+            filter: `drop-shadow(0 0 10px rgba(${activeRgb},0.5))`,
+          }}>TIME TRACKER</h2>
+          <p style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", margin: "3px 0 0" }}>Сегодня {fmtDur(todayTotal)} · Неделя {fmtDur(weekTotal)}</p>
+        </div>
+        <NeonButton active={editCats} color="#B57BFF" onClick={() => setEditCats(v => !v)}>⚙ Категории</NeonButton>
+      </div>
+
+      {editCats && (
+        <div style={{
+          borderRadius: 14, border: "1px solid rgba(181,123,255,0.3)", padding: "1rem 1.25rem", marginBottom: "1.25rem",
+          background: "rgba(181,123,255,0.05)", boxShadow: "0 0 24px rgba(181,123,255,0.12), inset 0 0 20px rgba(181,123,255,0.04)",
+        }}>
+          <p style={{ fontSize: 11, fontWeight: 600, letterSpacing: 1, color: "rgba(255,255,255,0.45)", margin: "0 0 14px", textTransform: "uppercase" }}>Редактирование категорий</p>
+          {cats.map((c, i) => {
+            const rgb = hexToRgb(c.color);
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <input type="color" value={c.color} onChange={e => updateCatColor(i, e.target.value)}
+                  style={{
+                    width: 30, height: 30, border: "none", borderRadius: 8, cursor: "pointer", background: "none", padding: 0,
+                    boxShadow: `0 0 10px rgba(${rgb},0.8)`,
+                  }} />
+                <input value={c.name} onChange={e => updateCatName(i, e.target.value)} style={{ ...inputStyle, flex: 1, padding: "6px 10px" }} />
+                <button onClick={() => removeCat(i)} disabled={cats.length <= 1} style={{
+                  background: "none", border: "none", cursor: cats.length > 1 ? "pointer" : "not-allowed",
+                  color: cats.length > 1 ? "#FF5C5C" : "rgba(255,255,255,0.2)", fontSize: 18, lineHeight: 1, padding: "2px 6px",
+                  textShadow: cats.length > 1 ? "0 0 8px rgba(255,92,92,0.7)" : "none",
+                }}>×</button>
+              </div>
+            );
+          })}
+          <div style={{ display: "flex", gap: 10, marginTop: 14, alignItems: "center" }}>
+            <input type="color" value={newCatColor} onChange={e => setNewCatColor(e.target.value)}
+              style={{ width: 30, height: 30, border: "none", borderRadius: 8, cursor: "pointer", background: "none", padding: 0, boxShadow: `0 0 10px rgba(${hexToRgb(newCatColor)},0.8)` }} />
+            <input value={newCatName} onChange={e => setNewCatName(e.target.value)} onKeyDown={e => e.key === "Enter" && addCat()}
+              placeholder="Новая категория..." style={{ ...inputStyle, flex: 1, padding: "6px 10px" }} />
+            <NeonButton active color={newCatColor} onClick={addCat} style={{ padding: "6px 14px" }}>+ Добавить</NeonButton>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginBottom: "1.5rem" }}>
+        {[["timer","Таймер","#00FFC2"],["log","Лог","#00C2FF"],["stats","Статистика","#B57BFF"]].map(([v,l,c]) => (
+          <NeonButton key={v} active={view === v} color={c} onClick={() => setView(v)}>{l}</NeonButton>
+        ))}
+      </div>
+
+      {view === "timer" && (
+        <div>
+          <div style={{ display: "flex", gap: 16, marginBottom: "1.25rem" }}>
+            <div style={{
+              flex: 1, borderRadius: 18, padding: "1.75rem 1.25rem", textAlign: "center",
+              background: `radial-gradient(ellipse at center, rgba(${activeRgb},0.1) 0%, rgba(255,255,255,0.02) 70%)`,
+              border: `1px solid rgba(${activeRgb},${running ? 0.6 : 0.15})`,
+              boxShadow: running ? `0 0 30px rgba(${activeRgb},0.35), inset 0 0 40px rgba(${activeRgb},0.08)` : "none",
+              transition: "all 0.4s ease", display: "flex", flexDirection: "column", justifyContent: "center",
+            }}>
+              <div style={{
+                fontSize: 46, fontWeight: 600, letterSpacing: 2,
+                color: running ? activeCat.color : "rgba(255,255,255,0.9)",
+                fontFamily: "var(--font-mono)",
+                textShadow: running ? `0 0 12px rgba(${activeRgb},0.9), 0 0 30px rgba(${activeRgb},0.5)` : "none",
+                transition: "all 0.3s ease",
+              }}>
+                {fmtDur(elapsed)}
+              </div>
+              {running && (
+                <div style={{ marginTop: 10, fontSize: 12, color: activeCat.color, opacity: 0.85 }}>
+                  {paused ? "⏸ пауза" : `● ${activeCat.name} · с ${fmtTime(startTs)}`}
+                </div>
+              )}
+              {justBeatRecord && running && !paused && (
+                <div style={{ marginTop: 8, fontSize: 11, color: "#FFE74C", textShadow: "0 0 8px rgba(255,231,76,0.8)", fontWeight: 600 }}>
+                  ★ НОВЫЙ РЕКОРД!
+                </div>
+              )}
+              {!running && record.ms > 0 && (
+                <div style={{ marginTop: 12, fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                  Рекорд: <span style={{ color: "#FFE74C" }}>{fmtDur(record.ms)}</span> · {record.category}
+                </div>
+              )}
+            </div>
+            <RocketTrack pct={currentPct} color={activeCat.color} running={running} paused={paused} isRecord={recordPct} />
+          </div>
+
+          <div style={{ marginBottom: "1rem" }}>
+            <label style={{ fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "rgba(255,255,255,0.4)", display: "block", marginBottom: 8 }}>Категория</label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {cats.map((c, i) => (
+                <NeonButton key={i} active={catIdx === i} color={c.color} disabled={running} onClick={() => setCatIdx(i)}>{c.name}</NeonButton>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: "1.25rem" }}>
+            <label style={{ fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "rgba(255,255,255,0.4)", display: "block", marginBottom: 8 }}>Заметка</label>
+            <input type="text" value={note} onChange={e => setNote(e.target.value)} placeholder="Что делаю..." style={inputStyle} />
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            {!running ? (
+              <button onClick={handleStart} style={{
+                flex: 1, padding: 13, borderRadius: 12, border: `1px solid ${activeCat.color}`,
+                background: `linear-gradient(180deg, rgba(${activeRgb},0.25), rgba(${activeRgb},0.1))`,
+                color: "#fff", fontSize: 15, fontWeight: 600, cursor: "pointer", letterSpacing: 0.5,
+                boxShadow: `0 0 14px rgba(${activeRgb},0.6), 0 0 36px rgba(${activeRgb},0.3), inset 0 0 14px rgba(${activeRgb},0.15)`,
+                textShadow: `0 0 8px rgba(${activeRgb},0.9)`,
+                transition: "all 0.25s ease",
+              }}>▶ СТАРТ</button>
+            ) : (
+              <>
+                <NeonButton active color="#FFB627" onClick={handlePause} style={{ flex: 1, padding: 13, fontSize: 14, fontWeight: 600 }}>
+                  {paused ? "▶ ПРОДОЛЖИТЬ" : "⏸ ПАУЗА"}
+                </NeonButton>
+                <button onClick={handleStop} style={{
+                  flex: 1, padding: 13, borderRadius: 12, border: "1px solid #FF5C5C",
+                  background: "linear-gradient(180deg, rgba(255,92,92,0.25), rgba(255,92,92,0.1))",
+                  color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", letterSpacing: 0.5,
+                  boxShadow: "0 0 14px rgba(255,92,92,0.6), 0 0 36px rgba(255,92,92,0.3)",
+                  textShadow: "0 0 8px rgba(255,92,92,0.9)",
+                }}>■ ЗАВЕРШИТЬ</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {view === "log" && (
+        <div>
+          {sessions.length === 0 && <p style={{ color: "rgba(255,255,255,0.35)", fontSize: 14, textAlign: "center", padding: "2rem 0" }}>Сессий пока нет</p>}
+          {sessions.map(s => {
+            const rgb = hexToRgb(s.color || "#888888");
+            return (
+              <div key={s.id}>
+                {editSession === s.id ? (
+                  <div style={{ padding: "12px 0", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                      {cats.map((c, i) => (
+                        <NeonButton key={i} active={s.category === c.name} color={c.color}
+                          onClick={() => setSessions(p => p.map(x => x.id === s.id ? { ...x, category: c.name, color: c.color } : x))}
+                          style={{ padding: "4px 12px", fontSize: 12 }}>{c.name}</NeonButton>
+                      ))}
+                    </div>
+                    <input value={s.note || ""} onChange={e => setSessions(p => p.map(x => x.id === s.id ? { ...x, note: e.target.value } : x))}
+                      placeholder="Заметка..." style={{ ...inputStyle, padding: "6px 10px", marginBottom: 8 }} />
+                    <NeonButton active color="#00C2FF" onClick={() => setEditSession(null)} style={{ padding: "4px 14px", fontSize: 12 }}>Готово</NeonButton>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                    <div style={{ width: 6, height: 36, borderRadius: 3, background: s.color || "#888", flexShrink: 0, boxShadow: `0 0 8px rgba(${rgb},0.8)` }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: s.color || "#fff", textShadow: `0 0 6px rgba(${rgb},0.6)` }}>{s.category}</span>
+                        <span style={{ fontSize: 12, color: "rgba(255,255,255,0.35)" }}>{fmtDate(s.start)} · {fmtTime(s.start)}–{fmtTime(s.end)}</span>
+                        {record.ms === s.duration && <span style={{ fontSize: 11, color: "#FFE74C", textShadow: "0 0 6px rgba(255,231,76,0.7)" }}>★</span>}
+                      </div>
+                      {s.note && <p style={{ margin: 0, fontSize: 13, color: "rgba(255,255,255,0.5)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.note}</p>}
+                    </div>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "#fff", flexShrink: 0 }}>{fmtDur(s.duration)}</span>
+                    <button onClick={() => setEditSession(s.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.4)", fontSize: 14, padding: 4 }}>✎</button>
+                    <button onClick={() => setSessions(p => p.filter(x => x.id !== s.id))} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.3)", fontSize: 16, padding: 4 }}>×</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {sessions.length > 0 && (
+            <button onClick={() => { if (confirm("Удалить все сессии?")) setSessions([]); }} style={{ marginTop: "1rem", fontSize: 12, color: "rgba(255,255,255,0.35)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>Очистить всё</button>
+          )}
+        </div>
+      )}
+
+      {view === "stats" && (
+        <div>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 14, marginBottom: "1.5rem",
+            padding: "0.9rem 1.1rem", borderRadius: 14,
+            background: "rgba(255,231,76,0.05)", border: "1px solid rgba(255,231,76,0.25)",
+            boxShadow: "0 0 18px rgba(255,231,76,0.1)",
+          }}>
+            <span style={{ fontSize: 22, filter: "drop-shadow(0 0 8px rgba(255,231,76,0.7))" }}>🏆</span>
+            <div>
+              <p style={{ margin: 0, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "rgba(255,255,255,0.4)" }}>Личный рекорд непрерывной сессии</p>
+              <p style={{ margin: "2px 0 0", fontSize: 18, fontWeight: 600, fontFamily: "var(--font-mono)", color: "#FFE74C", textShadow: "0 0 10px rgba(255,231,76,0.6)" }}>
+                {record.ms > 0 ? fmtDur(record.ms) : "—"} {record.category && <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontFamily: "var(--font-sans)" }}>· {record.category}</span>}
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: "1.5rem" }}>
+            {[["today","Сегодня","#00FFC2"],["week","7 дней","#00C2FF"],["month","30 дней","#B57BFF"]].map(([k,l,c]) => (
+              <NeonButton key={k} active={statsRange === k} color={c} onClick={() => setStatsRange(k)}>{l}</NeonButton>
+            ))}
+          </div>
+
+          {catTotals.length === 0 ? (
+            <p style={{ color: "rgba(255,255,255,0.35)", fontSize: 14, textAlign: "center", padding: "2rem 0" }}>Нет данных за выбранный период</p>
+          ) : (
+            <React.Fragment>
+              <div style={{ display: "flex", alignItems: "center", gap: 24, marginBottom: "1.75rem", flexWrap: "wrap" }}>
+                <svg viewBox="0 0 200 180" width={180} height={162} style={{ flexShrink: 0, filter: "drop-shadow(0 0 10px rgba(255,255,255,0.06))" }}>
+                  <circle cx={CX} cy={CY} r={R} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={strokeW} />
+                  {arcs.map((a, i) => {
+                    const rgb = hexToRgb(a.color);
+                    return (
+                      <circle key={i} cx={CX} cy={CY} r={R} fill="none" stroke={a.color} strokeWidth={strokeW}
+                        strokeDasharray={`${a.dash} ${circ - a.dash}`}
+                        strokeDashoffset={circ / 4 - a.offset}
+                        strokeLinecap="butt"
+                        style={{ transition: "stroke-dasharray 0.4s", filter: `drop-shadow(0 0 6px rgba(${rgb},0.9))` }} />
+                    );
+                  })}
+                  <text x={CX} y={CY - 8} textAnchor="middle" fontSize={11} fill="rgba(255,255,255,0.4)">Итого</text>
+                  <text x={CX} y={CY + 12} textAnchor="middle" fontSize={16} fontWeight={600} fill="#fff" style={{ filter: "drop-shadow(0 0 6px rgba(255,255,255,0.4))" }}>{fmtHours(totalMs)}</text>
+                </svg>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  {catTotals.map(c => {
+                    const rgb = hexToRgb(c.color);
+                    return (
+                      <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                        <div style={{ width: 10, height: 10, borderRadius: 3, background: c.color, flexShrink: 0, boxShadow: `0 0 8px rgba(${rgb},0.9)` }} />
+                        <span style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", flex: 1 }}>{c.name}</span>
+                        <span style={{ fontSize: 12, color: c.color, fontFamily: "var(--font-mono)", textShadow: `0 0 6px rgba(${rgb},0.6)` }}>{Math.round(c.pct * 100)}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "1.5rem" }}>
+                {catTotals.map(c => {
+                  const rgb = hexToRgb(c.color);
+                  return (
+                    <div key={c.name} style={{ marginBottom: 14 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: c.color, textShadow: `0 0 6px rgba(${rgb},0.5)` }}>{c.name}</span>
+                        <span style={{ fontSize: 13, fontFamily: "var(--font-mono)", color: "#fff" }}>{fmtDur(c.ms)}</span>
+                      </div>
+                      <div style={{ height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                        <div style={{ height: "100%", borderRadius: 4, background: c.color, width: `${Math.round(c.ms / totalMs * 100)}%`, transition: "width 0.4s", boxShadow: `0 0 10px rgba(${rgb},0.9)` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[{ label: "Сегодня", val: fmtDur(todayTotal), c: "#00FFC2" }, { label: "За неделю", val: fmtDur(weekTotal), c: "#00C2FF" }].map(m => {
+                  const rgb = hexToRgb(m.c);
+                  return (
+                    <div key={m.label} style={{
+                      borderRadius: 12, padding: "1rem", textAlign: "center",
+                      background: `rgba(${rgb},0.05)`, border: `1px solid rgba(${rgb},0.25)`,
+                      boxShadow: `0 0 18px rgba(${rgb},0.12)`,
+                    }}>
+                      <p style={{ margin: "0 0 4px", fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "rgba(255,255,255,0.4)" }}>{m.label}</p>
+                      <p style={{ margin: 0, fontSize: 21, fontWeight: 600, fontFamily: "var(--font-mono)", color: m.c, textShadow: `0 0 10px rgba(${rgb},0.7)` }}>{m.val}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </React.Fragment>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
